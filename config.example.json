@@ -1,0 +1,77 @@
+# Notes for the VS Code agent: Railway Status Widget setup
+
+## What this project is
+A small local dashboard for a **Corsair Xeneon Edge** touchscreen (2560×720, driven by Corsair iCUE on Windows).
+It shows **one status icon per Railway project** (railway.com) inside an iCUE **iFrame widget**.
+
+- `server.js`: Node.js server (no npm dependencies, Node 18+ for built-in `fetch`). Listens on `127.0.0.1:3030` only.
+  Every `pollSeconds` it queries Railway's GraphQL API (`https://backboard.railway.com/graphql/v2`) with the token from `config.json`,
+  caches the result, and serves it at `/api/status`. It also serves `public/index.html`.
+- `public/index.html`: the widget page. It polls `/api/status` every 15 seconds and draws one rounded icon per project:
+  green = online, amber pulsing = deploying, red flashing = crashed/failed, grey = sleeping.
+  Tapping an icon opens a list of that project's services. Icon size auto-fits any iCUE widget slot.
+- `config.example.json`: template for `config.json`.
+- `start.bat`: double-click launcher for Windows.
+- Flags: `node server.js --demo` (fake data, no token needed) and `node server.js --check` (prints what Railway returns, then exits).
+
+The layout and demo mode have been tested. **The live Railway queries have NOT been tested against a real account yet.**
+That is the main thing to verify.
+
+## Your job: help me get this running on my Windows PC
+
+### 1. Check prerequisites
+- Run `node -v`. It must be v18 or newer. If Node is missing or old, tell me to install the LTS version from nodejs.org, then continue.
+- No `npm install` is needed. Do not add dependencies unless there's a real need.
+
+### 2. Preview in demo mode
+- Run `node server.js --demo` and have me open http://127.0.0.1:3030 in a browser.
+- I should see five fake projects with colored icons. Stop the server afterwards (Ctrl+C).
+
+### 3. Create config.json
+- Copy `config.example.json` to `config.json`.
+- Ask me to paste my Railway token myself. **Do not ask me to paste the token into chat.**
+- The token must be an **Account token** (Railway → Account Settings → Tokens → "No workspace") or a **Workspace token**.
+  A **Project token will not work**, because it can only see one project and uses a different header.
+- Delete the sample `"My Project Name"` entry in `icons` (or leave `icons` as `{}`).
+- Add a `.gitignore` containing `config.json` so the token is never committed.
+
+### 4. Verify the live Railway connection
+- Run `node server.js --check`.
+- **Success:** it prints `OK — found N project(s)` with each project and service.
+- **If it fails**, debug the GraphQL queries in `server.js` (`PROJECTS_QUERY` and `DEPLOYMENTS_QUERY`):
+  - `Not Authorized`: wrong token type. See step 3.
+  - A schema or field error (e.g. "Cannot query field ..."): Railway's schema may differ from what I assumed.
+    Use introspection against the endpoint with my token (`Authorization: Bearer <token>`) to find the correct fields.
+    Useful references: https://docs.railway.com/integrations/api and `railway api describe <Type>` if the Railway CLI is installed.
+    Known alternatives if `projects` doesn't work with an account token:
+    `me { workspaces { ... projects ... } }`, or querying `serviceInstances` / `latestDeployment` per environment.
+  - Keep the output shape the same (`{ name, environment, state, icon, services: [{ name, status, state, deployedAt }] }`)
+    so `public/index.html` doesn't need changes.
+- Railway deployment statuses are mapped in `stateFor()`. If Railway returns a status that shows up as "unknown", add it there.
+
+### 5. Run it for real
+- Run `start.bat` (or `node server.js`) and confirm http://127.0.0.1:3030 shows my real projects.
+
+### 6. Put it on the Xeneon Edge
+Tell me to do this in iCUE (you can't click in iCUE yourself):
+Xeneon Edge → add widget → **iFrame** → paste:
+```html
+<iframe src="http://127.0.0.1:3030/" width="100%" height="100%" frameborder="0"></iframe>
+```
+
+### 7. Start automatically with Windows (optional)
+Create a shortcut to `start.bat` in the Startup folder (`Win + R` → `shell:startup`).
+A nicer option is to run it hidden: create a `start-hidden.vbs` next to `start.bat` with
+`CreateObject("WScript.Shell").Run "cmd /c """ & CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\start.bat""", 0`
+and put the shortcut to that in Startup instead. Ask me which I'd prefer.
+
+## Rules
+- Keep the server bound to `127.0.0.1`. Don't expose it on the network or host the page publicly. It holds a token that can control my deployments.
+- Never print, log, or commit the token.
+- Keep `pollSeconds` at 30 or higher to stay well within Railway's API rate limits.
+- Keep it dependency-free and simple; explain each step in plain language as you go, because I'm not a full-time developer.
+
+## Possible next features (only if I ask)
+- Tap-and-hold an icon to restart a crashed service (Railway `deploymentRestart` mutation).
+- Show Railway's own platform status (status.railway.com) as a small banner.
+- Windows toast notification when a project goes down.

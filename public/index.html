@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Railway Status</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --tile: #15181d;
+    --tile-edge: #232830;
+    --text: #e8ebef;
+    --muted: #7d8590;
+    --up: #2fd67b;
+    --deploying: #f5b83d;
+    --down: #ff4d5e;
+    --sleeping: #6b7686;
+    --unknown: #b07cff;
+    --none: #3a404a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    user-select: none; -webkit-user-select: none;
+  }
+  body { display: flex; flex-direction: column; }
+
+  #grid {
+    flex: 1; min-height: 0;
+    display: flex; flex-wrap: wrap; align-content: center; justify-content: center;
+    padding: 2vmin;
+  }
+  .proj {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .icon {
+    position: relative;
+    width: var(--s); height: var(--s);
+    border-radius: 24%;
+    background: var(--tile);
+    border: calc(var(--s) * 0.035) solid var(--c);
+    box-shadow: 0 0 calc(var(--s) * 0.18) color-mix(in srgb, var(--c) 45%, transparent),
+                inset 0 0 calc(var(--s) * 0.25) color-mix(in srgb, var(--c) 14%, transparent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; letter-spacing: 0.02em;
+    font-size: calc(var(--s) * 0.34);
+    transition: transform .15s ease;
+  }
+  .proj:active .icon { transform: scale(0.94); }
+  .badge {
+    position: absolute; right: -6%; top: -6%;
+    width: 26%; height: 26%; border-radius: 50%;
+    background: var(--c); border: calc(var(--s) * 0.03) solid var(--bg);
+  }
+  .deploying .badge { animation: pulse 1.2s ease-in-out infinite; }
+  .down .icon { animation: alarm 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @keyframes alarm { 50% { box-shadow: 0 0 calc(var(--s) * 0.35) var(--down); } }
+
+  .dots { position: absolute; bottom: 9%; display: flex; gap: calc(var(--s) * 0.04); }
+  .dots i { width: calc(var(--s) * 0.065); height: calc(var(--s) * 0.065); border-radius: 50%; background: var(--dc); }
+
+  .label {
+    margin-top: calc(var(--s) * 0.1);
+    font-size: max(11px, calc(var(--s) * 0.13));
+    max-width: calc(var(--s) * 1.35);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+  }
+  .sub { font-size: max(10px, calc(var(--s) * 0.1)); color: var(--c); margin-top: 2px; text-transform: uppercase; letter-spacing: .06em; }
+
+  footer {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 2.5vmin 1.5vmin; font-size: max(10px, 2.6vmin); color: var(--muted);
+  }
+  footer .warn { color: var(--deploying); }
+
+  #msg { margin: auto; text-align: center; color: var(--muted); font-size: 4vmin; padding: 4vmin; }
+
+  #detail {
+    position: fixed; inset: 0; background: rgba(8,9,11,.94);
+    display: none; flex-direction: column; padding: 3vmin 4vmin;
+  }
+  #detail.open { display: flex; }
+  #detail h2 { font-size: max(14px, 5vmin); display: flex; align-items: center; gap: 1.5vmin; }
+  #detail h2 .env { font-size: .55em; color: var(--muted); font-weight: 400; }
+  #detail ul { list-style: none; margin-top: 2vmin; overflow-y: auto; flex: 1; }
+  #detail li {
+    display: flex; align-items: center; gap: 2vmin;
+    padding: 1.6vmin 0; border-bottom: 1px solid var(--tile-edge);
+    font-size: max(12px, 3.8vmin);
+  }
+  #detail li .dot { width: 2.4vmin; height: 2.4vmin; min-width: 10px; min-height: 10px; border-radius: 50%; background: var(--c); }
+  #detail li .st { margin-left: auto; color: var(--c); font-size: .8em; letter-spacing: .05em; }
+  #detail li .when { color: var(--muted); font-size: .75em; min-width: 7ch; text-align: right; }
+  #detail .hint { color: var(--muted); font-size: max(10px, 2.6vmin); text-align: center; padding-top: 1vmin; }
+</style>
+</head>
+<body>
+  <div id="grid"><div id="msg">Connecting…</div></div>
+  <footer><span id="summary"></span><span id="updated"></span></footer>
+
+  <div id="detail">
+    <h2><span id="d-name"></span><span class="env" id="d-env"></span></h2>
+    <ul id="d-list"></ul>
+    <div class="hint">Tap anywhere to close</div>
+  </div>
+
+<script>
+const COLORS = { up: "var(--up)", deploying: "var(--deploying)", down: "var(--down)",
+                 sleeping: "var(--sleeping)", unknown: "var(--unknown)", none: "var(--none)" };
+const LABELS = { up: "Online", deploying: "Deploying", down: "Down", sleeping: "Sleeping", unknown: "Unknown", none: "No deploy" };
+const REFRESH_MS = 15000;
+
+let data = null;
+let openProject = null;
+
+function initials(name) {
+  const words = name.replace(/[-_]/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (m < 1) return "now";
+  if (m < 60) return m + "m";
+  if (m < 1440) return Math.round(m / 60) + "h";
+  return Math.round(m / 1440) + "d";
+}
+
+function fitSize(n, W, H) {
+  let best = 40;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const byW = W / cols / 1.45;
+    const byH = H / rows / 1.75;
+    best = Math.max(best, Math.min(byW, byH));
+  }
+  return Math.min(best, 220);
+}
+
+function render() {
+  const grid = document.getElementById("grid");
+  if (!data) return;
+  const projects = data.projects || [];
+
+  if (!projects.length) {
+    grid.innerHTML = `<div id="msg">${data.error ? "Can't reach Railway:<br>" + escapeHtml(data.error) : "No projects found"}</div>`;
+  } else {
+    const s = fitSize(projects.length, grid.clientWidth - 16, grid.clientHeight - 16);
+    grid.innerHTML = "";
+    projects.forEach((p, i) => {
+      const el = document.createElement("div");
+      el.className = "proj " + p.state;
+      el.style.setProperty("--s", s + "px");
+      el.style.setProperty("--c", COLORS[p.state]);
+      el.style.width = s * 1.45 + "px";
+      el.style.height = s * 1.75 + "px";
+      const dots = p.services.length > 1
+        ? `<div class="dots">${p.services.map(sv => `<i style="--dc:${COLORS[sv.state]}"></i>`).join("")}</div>` : "";
+      el.innerHTML = `
+        <div class="icon">${escapeHtml(p.icon || initials(p.name))}<span class="badge"></span>${dots}</div>
+        <div class="label">${escapeHtml(p.name)}</div>
+        <div class="sub">${LABELS[p.state]}</div>`;
+      el.onclick = () => showDetail(i);
+      grid.appendChild(el);
+    });
+  }
+
+  const counts = projects.reduce((a, p) => (a[p.state] = (a[p.state] || 0) + 1, a), {});
+  const parts = [];
+  if (counts.down) parts.push(`<span style="color:var(--down)">${counts.down} down</span>`);
+  if (counts.deploying) parts.push(`<span style="color:var(--deploying)">${counts.deploying} deploying</span>`);
+  parts.push(`${counts.up || 0}/${projects.length} online`);
+  document.getElementById("summary").innerHTML = (data.demo ? "DEMO · " : "") + parts.join(" · ");
+
+  const stale = data.error ? ` <span class="warn">· stale</span>` : "";
+  document.getElementById("updated").innerHTML = data.updatedAt
+    ? "Updated " + new Date(data.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + stale
+    : "";
+
+  if (openProject !== null) showDetail(openProject);
+}
+
+function showDetail(i) {
+  const p = data.projects[i];
+  if (!p) return closeDetail();
+  openProject = i;
+  document.getElementById("d-name").textContent = p.name;
+  document.getElementById("d-env").textContent = p.environment || "";
+  document.getElementById("d-list").innerHTML = p.services.map(s => `
+    <li style="--c:${COLORS[s.state]}">
+      <span class="dot"></span>${escapeHtml(s.name)}
+      <span class="st">${LABELS[s.state].toUpperCase()}</span>
+      <span class="when">${ago(s.deployedAt)}</span>
+    </li>`).join("") || "<li>No services</li>";
+  document.getElementById("detail").classList.add("open");
+}
+function closeDetail() {
+  openProject = null;
+  document.getElementById("detail").classList.remove("open");
+}
+document.getElementById("detail").onclick = closeDetail;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    data = await r.json();
+  } catch (e) {
+    data = { ...(data || { projects: [] }), error: "Widget server not running" };
+  }
+  render();
+}
+
+window.addEventListener("resize", render);
+load();
+setInterval(load, REFRESH_MS);
+</script>
+</body>
+</html>
